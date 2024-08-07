@@ -1,6 +1,7 @@
 #include <cstdint>
-#include <iostream>
 #include <array>
+#include <string>
+#include <expected>
 
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
@@ -8,11 +9,29 @@
 #include <spdlog/spdlog.h>
 
 #include <glm/vec3.hpp>
+using namespace std::literals;
 
-struct VertexPositionColor {
+struct Vertex
+{
     glm::vec3 Position;
     glm::vec3 Color;
 };
+
+std::expected<uint32_t, std::string> CreateProgram(uint32_t shaderType, std::string_view shaderSource) {
+    const char* shaderSourcePtr = shaderSource.data();
+    auto shaderProgram = glCreateShaderProgramv(shaderType, 1, &shaderSourcePtr);
+    auto linkStatus = 0;
+    glGetProgramiv(shaderProgram, GL_LINK_STATUS, &linkStatus);
+    if (linkStatus == GL_FALSE){
+        auto infoLogLength = 0;
+        char infoLog[1024];
+        glGetProgramInfoLog(shaderProgram, 1024, &infoLogLength, infoLog);
+
+        return std::unexpected(infoLog);
+    }
+
+    return shaderProgram;
+}
 
 int32_t main([[maybe_unused]] int32_t argc, [[maybe_unused]] char* argv[])
 {
@@ -20,7 +39,6 @@ int32_t main([[maybe_unused]] int32_t argc, [[maybe_unused]] char* argv[])
         spdlog::error("GLFW: Unable to initialize.");
         return 1;
     }
-
     glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_API);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 6);
@@ -79,6 +97,11 @@ int32_t main([[maybe_unused]] int32_t argc, [[maybe_unused]] char* argv[])
     glfwMakeContextCurrent(windowHandle);
     gladLoadGLLoader((GLADloadproc)glfwGetProcAddress);
 
+    int32_t framebufferWidth = 0;
+    int32_t framebufferHeight = 0;
+    glfwGetFramebufferSize(windowHandle, &framebufferWidth, &framebufferHeight);
+    glViewport(0, 0, framebufferWidth, framebufferHeight);
+
     glEnable(GL_FRAMEBUFFER_SRGB);
     glEnable(GL_CULL_FACE);
     glCullFace(GL_BACK);
@@ -87,23 +110,107 @@ int32_t main([[maybe_unused]] int32_t argc, [[maybe_unused]] char* argv[])
     glClearColor(0.35f, 0.76f, 0.16f, 1.0f);
     glClearDepthf(1.0f);
 
-    std::array<VertexPositionColor, 3> vertices = {
-        VertexPositionColor{.Position = glm::vec3(-0.5f, 0.5f, 0.0f), .Color = glm::vec3(1.0f, 0.2f, 1.0f) },
-        VertexPositionColor{.Position = glm::vec3(+0.0f, -0.5f, 0.0f), .Color = glm::vec3(0.2f, 1.0f, 1.0f) },
-        VertexPositionColor{.Position = glm::vec3(+0.5f, +0.5f, 0.0f), .Color = glm::vec3(1.0f, 1.0f, 0.2f) }
+
+    std::array<Vertex, 3> vertices =
+    {
+        Vertex{.Position = glm::vec3(-0.5f, 0.5f, 0.0f), .Color = glm::vec3(1.0f, 0.2f, 1.0f) },
+        Vertex{.Position = glm::vec3(0.0f, -0.5f, 0.0f), .Color = glm::vec3(0.2f, 1.0f, 1.0f) },
+        Vertex{.Position = glm::vec3(0.5f, 0.5f, 0.0f), .Color = glm::vec3(1.0f, 1.0f, 0.2f) }
     };
 
-    //TO-DO complete Hello Triangle on LearnOpenGL
+    uint32_t vertexBuffer = 0;
+    glCreateBuffers(1, &vertexBuffer);
+    glNamedBufferStorage(vertexBuffer, vertices.size() * sizeof(Vertex), vertices.data(), GL_MAP_WRITE_BIT);
 
+    uint32_t inputLayout = 0;
+    glCreateVertexArrays(1, &inputLayout);
+
+    glEnableVertexArrayAttrib(inputLayout, 0);
+    glVertexArrayAttribFormat(inputLayout, 0, 3, GL_FLOAT, GL_FALSE, offsetof(Vertex, Position));
+    glVertexArrayAttribBinding(inputLayout, 0, 0);
+
+    glEnableVertexArrayAttrib(inputLayout, 1);
+    glVertexArrayAttribFormat(inputLayout, 1, 3, GL_FLOAT, GL_FALSE, offsetof(Vertex, Color));
+    glVertexArrayAttribBinding(inputLayout, 1, 0);
+
+    glVertexArrayVertexBuffer(inputLayout, 0, vertexBuffer, 0, sizeof(Vertex));
+
+    auto vertexShaderSource = R"glsl(
+        #version 460 core
+
+        out gl_PerVertex
+        {
+            vec4 gl_Position;
+        };
+
+        layout (location = 0) in vec3 i_position;
+        layout (location = 1) in vec3 i_color;
+
+        layout (location = 0) out vec3 v_color;
+
+        void main()
+        {
+            gl_Position = vec4(i_position, 1.0);
+            v_color = i_color;
+        })glsl"sv;
+
+    auto fragmentShaderSource = R"glsl(
+        #version 460 core
+
+        layout (location = 0) in vec3 v_color;
+
+        layout (location = 0) out vec4 out_color;
+
+        void main()
+        {
+            out_color = vec4(v_color, 1.0);
+        })glsl"sv;
+
+    auto vertexShaderResult = CreateProgram(GL_VERTEX_SHADER, vertexShaderSource);
+    if (!vertexShaderResult.has_value()) {
+        spdlog::error("OpenGL: Failed to compile vertex shader: {}", vertexShaderResult.error());
+        return 1;
+
+    }
+    uint32_t vertexShader = vertexShaderResult.value();
+
+    auto fragmentShaderResult = CreateProgram(GL_FRAGMENT_SHADER, fragmentShaderSource);
+    if (!fragmentShaderResult.has_value()) {
+        spdlog::error("OpenGL: Failed to compile fragment shader: {}", fragmentShaderResult.error());
+        return 1;
+    }
+    uint32_t fragmentShader = fragmentShaderResult.value();
+
+    uint32_t programPipeline = 0;
+    glCreateProgramPipelines(1, &programPipeline);
+    glUseProgramStages(programPipeline, GL_VERTEX_SHADER_BIT, vertexShader);
+    glUseProgramStages(programPipeline, GL_FRAGMENT_SHADER_BIT, fragmentShader);
+
+    glClearColor(0.05f, 0.3f, 0.6f, 1.0f);
     // Render loop!
     while (!glfwWindowShouldClose(windowHandle)) {
         glfwPollEvents();
 
+        glClear(GL_COLOR_BUFFER_BIT);
+
+        glBindVertexArray(inputLayout);
+        glBindProgramPipeline(programPipeline);
+        glDrawArrays(GL_TRIANGLES, 0, vertices.size());
+
         glfwSwapBuffers(windowHandle);
     }
+
+    glDeleteProgram(fragmentShader);
+    glDeleteProgram(vertexShader);
+    glDeleteProgramPipelines(1, &programPipeline);
+
+    glDeleteBuffers(1, &vertexBuffer);
+    glDeleteVertexArrays(1, &inputLayout);
 
     glfwDestroyWindow(windowHandle);
     glfwTerminate();
 
     return 0;
+
+    //TO-DO continue with shaders and hello triangle assignments on LearnOpenGL
 }
